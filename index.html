@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HELL'S GATE: Backrooms Edition</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Segoe UI', sans-serif; user-select: none; }
+        
+        #ui { 
+            position: absolute; bottom: 0; left: 0; right: 0; 
+            display: flex; justify-content: space-around; align-items: center;
+            background: linear-gradient(0deg, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0) 100%);
+            padding: 25px; color: #ff3333; text-shadow: 0 0 15px #ff0000;
+            pointer-events: none; z-index: 10; font-size: 24px; font-weight: 900;
+        }
+
+        #minimap-container {
+            position: absolute; top: 15px; left: 15px;
+            width: 100px; height: 100px;
+            border: 2px solid #ff0000; background: rgba(0,0,0,0.8);
+            z-index: 20; border-radius: 4px; overflow: hidden;
+        }
+        #minimap { width: 100%; height: 100%; }
+
+        #crosshair { 
+            position: absolute; top: 50%; left: 50%; width: 20px; height: 20px; 
+            transform: translate(-50%, -50%); pointer-events: none; 
+        }
+        #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(0, 255, 0, 0.7); }
+        #crosshair::before { top: 50%; left: 0; width: 100%; height: 2px; }
+        #crosshair::after { left: 50%; top: 0; width: 2px; height: 100%; }
+
+        #weapon-container {
+            position: absolute; bottom: -10px; left: 50%; transform: translateX(-50%);
+            width: 380px; height: 320px; pointer-events: none; z-index: 8;
+        }
+        #weapon { 
+            width: 100%; height: 100%; 
+            background: linear-gradient(180deg, #444 0%, #111 100%); 
+            clip-path: polygon(35% 100%, 48% 12%, 52% 12%, 65% 100%); 
+            border-top: 5px solid #ff0000;
+        }
+
+        #instructions { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.98); color: #fff; display: flex;
+            flex-direction: column; justify-content: center; align-items: center;
+            z-index: 100; cursor: pointer; text-align: center;
+        }
+
+        #flash { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; pointer-events: none; z-index: 5; }
+        .stat-box { display: flex; flex-direction: column; align-items: center; }
+        .stat-label { font-size: 11px; color: #ff9999; text-transform: uppercase; letter-spacing: 2px; }
+        #level-name { position: absolute; top: 20px; right: 20px; color: #fff; font-size: 18px; letter-spacing: 2px; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+    <div id="flash"></div>
+    <div id="level-name">РІВЕНЬ: ???</div>
+    
+    <div id="instructions">
+        <h1 style="color: #f00; font-size: 48px; text-shadow: 0 0 20px #f00; margin-bottom: 10px;">BACKROOMS GATE</h1>
+        <p style="font-size: 20px;">КЛІКНІТЬ, ЩОБ ПОЧАТИ ВТОРГНЕННЯ</p>
+        <div style="margin-top: 20px; color: #888; line-height: 1.6;">
+            WASD — РУХ | ЛКМ — ВОГОНЬ
+        </div>
+    </div>
+
+    <div id="minimap-container"><canvas id="minimap"></canvas></div>
+    <div id="crosshair"></div>
+    <div id="weapon-container"><div id="weapon"></div></div>
+    
+    <div id="ui">
+        <div class="stat-box"><span class="stat-label">ЗДОРОВ'Я</span><span id="hp">100</span>%</div>
+        <div class="stat-box"><span class="stat-label">РІВЕНЬ</span><span id="lvl">1</span></div>
+        <div class="stat-box"><span class="stat-label">НАБОЇ</span><span id="ammo">60</span></div>
+    </div>
+
+<script>
+/**
+ * Конфігурація біомів (Backrooms-стиль)
+ */
+const BIOMES = {
+    1: { name: "The Lobby", color: 0xcccc77, fogDensity: 0.04, wallColor: 0x333322 },
+    2: { name: "Pipe Hospital", color: 0x446688, fogDensity: 0.06, wallColor: 0x112233 },
+    3: { name: "Electrical Station", color: 0x661111, fogDensity: 0.08, wallColor: 0x1a0505 },
+    4: { name: "The Void", color: 0x222222, fogDensity: 0.1, wallColor: 0x000000 }
+};
+
+class GameState {
+    constructor() {
+        this.health = 100;
+        this.level = 1;
+        this.ammo = 60;
+        this.controlsEnabled = false;
+        this.pitch = 0;
+        this.weaponBob = 0;
+    }
+    updateUI() {
+        document.getElementById('hp').innerText = Math.max(0, Math.floor(this.health));
+        document.getElementById('lvl').innerText = this.level;
+        document.getElementById('ammo').innerText = this.ammo;
+        const biome = BIOMES[((this.level-1) % 4) + 1];
+        document.getElementById('level-name').innerText = biome.name;
+    }
+}
+
+class ParticleSystem {
+    constructor(scene) { this.scene = scene; this.particles = []; }
+    emit(pos, color, count = 8) {
+        for (let i = 0; i < count; i++) {
+            const p = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), new THREE.MeshBasicMaterial({ color }));
+            p.position.copy(pos);
+            p.userData.vel = new THREE.Vector3((Math.random()-0.5)*0.2, Math.random()*0.2, (Math.random()-0.5)*0.2);
+            p.userData.life = 1.0;
+            this.scene.add(p);
+            this.particles.push(p);
+        }
+    }
+    update() {
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+            const p = this.particles[i];
+            p.position.add(p.userData.vel);
+            p.userData.life -= 0.05;
+            p.scale.setScalar(p.userData.life);
+            if (p.userData.life <= 0) { this.scene.remove(p); this.particles.splice(i, 1); }
+        }
+    }
+}
+
+class MiniMap {
+    constructor(canvas, world, enemies) {
+        this.ctx = canvas.getContext('2d');
+        this.world = world;
+        this.enemies = enemies;
+        canvas.width = 100; canvas.height = 100;
+    }
+    draw(playerPos) {
+        this.ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        this.ctx.fillRect(0, 0, 100, 100);
+        const cx = 50, cy = 50, sc = 0.8;
+        this.ctx.fillStyle = '#444';
+        this.world.objects.forEach(o => {
+            if (o.geometry.type === 'BoxGeometry') {
+                const dx = (o.position.x - playerPos.x) * sc, dz = (o.position.z - playerPos.z) * sc;
+                this.ctx.fillRect(cx + dx - 1, cy + dz - 1, 2, 2);
+            }
+        });
+        this.ctx.fillStyle = '#f00';
+        this.enemies.enemies.forEach(e => {
+            const dx = (e.position.x - playerPos.x) * sc, dz = (e.position.z - playerPos.z) * sc;
+            this.ctx.fillRect(cx + dx - 1, cy + dz - 1, 2, 2);
+        });
+        this.ctx.fillStyle = '#0f0';
+        this.ctx.fillRect(cx - 1, cy - 1, 2, 2);
+    }
+}
+
+class WorldManager {
+    constructor(scene) { this.scene = scene; this.objects = []; this.portal = null; }
+    generate(lvl) {
+        this.objects.forEach(o => this.scene.remove(o));
+        this.objects = [];
+        
+        const biomeIdx = ((lvl - 1) % 4) + 1;
+        const biome = BIOMES[biomeIdx];
+
+        // Оновлення оточення
+        scene.background = new THREE.Color(biome.color);
+        scene.fog.color.set(biome.color);
+        scene.fog.density = biome.fogDensity;
+
+        const floor = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), new THREE.MeshPhongMaterial({ color: 0x111111 }));
+        floor.rotateX(-Math.PI/2); this.scene.add(floor); this.objects.push(floor);
+
+        // Генерація коридорів
+        for(let i = 0; i < 60 + lvl * 5; i++) {
+            const h = 10;
+            const w = new THREE.Mesh(new THREE.BoxGeometry(8, h, 8), new THREE.MeshPhongMaterial({ color: biome.wallColor }));
+            // Створюємо заплутаніші позиції
+            const posX = Math.round((Math.random()-0.5)*30) * 10;
+            const posZ = Math.round((Math.random()-0.5)*30) * 10;
+            w.position.set(posX, h/2, posZ);
+            this.scene.add(w); this.objects.push(w);
+        }
+
+        this.portal = new THREE.Mesh(new THREE.TorusKnotGeometry(2, 0.4, 64, 8), new THREE.MeshPhongMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 2 }));
+        this.portal.position.set((Math.random()-0.5)*120, 4, (Math.random()-0.5)*120);
+        this.portal.add(new THREE.PointLight(0xffffff, 5, 20));
+        this.scene.add(this.portal); this.objects.push(this.portal);
+        
+        this.spawn(0x00ff00, 'ammo');
+        this.spawn(0xff00ff, 'health');
+    }
+    spawn(col, type) {
+        const o = new THREE.Mesh(new THREE.OctahedronGeometry(0.8), new THREE.MeshPhongMaterial({ color: col, emissive: col, emissiveIntensity: 1 }));
+        o.position.set((Math.random()-0.5)*100, 1.5, (Math.random()-0.5)*100);
+        o.userData = { type }; o.add(new THREE.PointLight(col, 2, 6));
+        this.scene.add(o); this.objects.push(o);
+    }
+}
+
+class EnemyManager {
+    constructor(scene) { this.scene = scene; this.enemies = []; }
+    spawn(lvl) {
+        this.enemies.forEach(e => this.scene.remove(e)); this.enemies = [];
+        const count = 10 + lvl;
+        for(let i = 0; i < count; i++) {
+            const e = new THREE.Mesh(new THREE.BoxGeometry(1.5, 4.5, 1.5), new THREE.MeshPhongMaterial({ color: 0x000000 }));
+            e.position.set((Math.random()-0.5)*150, 2.25, (Math.random()-0.5)*150);
+            const l = new THREE.PointLight(0xff0000, 2, 8); e.add(l);
+            e.userData = { hp: 2 + Math.floor(lvl/3), speed: 6 + (lvl * 0.5) };
+            this.scene.add(e); this.enemies.push(e);
+        }
+    }
+}
+
+let state = new GameState();
+let world, enemyMgr, fx, camera, scene, renderer, clock, minimap, muzzle, flashLight;
+let keys = {};
+
+function init() {
+    scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x000000, 0.05);
+    
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 500);
+    camera.rotation.order = 'YXZ';
+    
+    // Покращений ліхтарик гравця
+    flashLight = new THREE.SpotLight(0xffffff, 1.5, 40, Math.PI/4, 0.5);
+    camera.add(flashLight);
+    camera.add(flashLight.target);
+    flashLight.target.position.set(0, 0, -1);
+    
+    muzzle = new THREE.PointLight(0xffaa00, 0, 15); camera.add(muzzle);
+    scene.add(camera);
+    
+    world = new WorldManager(scene);
+    enemyMgr = new EnemyManager(scene);
+    fx = new ParticleSystem(scene);
+    minimap = new MiniMap(document.getElementById('minimap'), world, enemyMgr);
+    
+    renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.setPixelRatio(window.devicePixelRatio / 2);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+    
+    clock = new THREE.Clock();
+    setupInput();
+    loadLevel(1);
+    animate();
+}
+
+function loadLevel(n) {
+    state.level = n; 
+    world.generate(n); 
+    enemyMgr.spawn(n);
+    camera.position.set(0, 1.8, 0); 
+    state.updateUI();
+}
+
+function setupInput() {
+    const startScreen = document.getElementById('instructions');
+    startScreen.addEventListener('click', () => document.body.requestPointerLock());
+    document.addEventListener('pointerlockchange', () => {
+        state.controlsEnabled = document.pointerLockElement === document.body;
+        startScreen.style.display = state.controlsEnabled ? 'none' : 'flex';
+    });
+    document.addEventListener('mousemove', (e) => {
+        if (!state.controlsEnabled) return;
+        camera.rotation.y -= e.movementX * 0.002;
+        state.pitch = Math.max(-1.5, Math.min(1.5, state.pitch - e.movementY * 0.002));
+        camera.rotation.x = state.pitch;
+    });
+    window.addEventListener('keydown', (e) => keys[e.code] = true);
+    window.addEventListener('keyup', (e) => keys[e.code] = false);
+    document.addEventListener('mousedown', shoot);
+}
+
+function shoot() {
+    if (!state.controlsEnabled || state.ammo <= 0) return;
+    state.ammo--; state.updateUI();
+    muzzle.intensity = 5; setTimeout(() => muzzle.intensity = 0, 50);
+    
+    const weaponContainer = document.getElementById('weapon-container');
+    weaponContainer.style.transform = 'translateX(-50%) translateY(30px)';
+    setTimeout(() => weaponContainer.style.transform = 'translateX(-50%)', 80);
+
+    const ray = new THREE.Raycaster(); 
+    ray.setFromCamera(new THREE.Vector2(0,0), camera);
+    const hits = ray.intersectObjects(enemyMgr.enemies);
+    if(hits.length > 0) {
+        const e = hits[0].object; e.userData.hp--; 
+        fx.emit(hits[0].point, 0xff0000, 12);
+        if(e.userData.hp <= 0) { 
+            fx.emit(e.position, 0xff0000, 20);
+            scene.remove(e); 
+            enemyMgr.enemies.splice(enemyMgr.enemies.indexOf(e), 1); 
+        }
+    }
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    if (!state.controlsEnabled) return;
+    const dt = clock.getDelta();
+    
+    // Рух
+    const move = (keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD']);
+    const s = (move ? 16 : 0) * dt;
+    if(keys['KeyW']) camera.translateZ(-s); if(keys['KeyS']) camera.translateZ(s);
+    if(keys['KeyA']) camera.translateX(-s); if(keys['KeyD']) camera.translateX(s);
+    camera.position.y = 1.8;
+
+    if(move) {
+        state.weaponBob += dt * 10;
+        document.getElementById('weapon').style.transform = `translate(${Math.sin(state.weaponBob)*12}px, ${Math.abs(Math.cos(state.weaponBob))*10}px)`;
+    }
+    
+    // Оновлення ворогів (сутності Backrooms)
+    enemyMgr.enemies.forEach(e => {
+        e.lookAt(camera.position.x, 2.25, camera.position.z);
+        const dist = e.position.distanceTo(camera.position);
+        if(dist > 2.5) {
+            const dir = new THREE.Vector3().subVectors(camera.position, e.position).normalize();
+            e.position.addScaledVector(dir, e.userData.speed * dt);
+        } else {
+            state.health -= 40 * dt; state.updateUI();
+            if(state.health <= 0) location.reload();
+        }
+    });
+
+    // Перехід на рівень
+    if(camera.position.distanceTo(world.portal.position) < 4) loadLevel(state.level+1);
+    
+    // Збір бонусів
+    world.objects.forEach((obj, i) => {
+        if(obj.userData.type && camera.position.distanceTo(obj.position) < 2.5) {
+            if(obj.userData.type === 'health') state.health = Math.min(100, state.health+50);
+            else state.ammo += 40;
+            scene.remove(obj); world.objects.splice(i, 1); state.updateUI();
+        }
+    });
+
+    fx.update(); 
+    minimap.draw(camera.position);
+    renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+window.onload = init;
+</script>
+</body>
+</html>
